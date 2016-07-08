@@ -1,0 +1,79 @@
+Error logging on FSP based machine:
+-----------------------------
+
+There are four OPAL calls for errorlog on FSP based machine:
+
+#define OPAL_ELOG_READ         71
+#define OPAL_ELOG_WRITE        72
+#define OPAL_ELOG_ACK          73
+#define OPAL_ELOG_RESEND       74
+#define OPAL_ELOG_SIZE         75
+
+Note: OPAL_ELOG_WRITE(72) Unused for now, can be used in future.
+
+OPAL_ELOG_READ
+--------------
+
+This token is used to register a call which will copy the errorlog content to
+the passed buffer with the passed elog id and elog size from the host kernel.
+
+OPAL_ELOG_READ accepts 3 parameters:
+- elog buffer
+- elog size
+- elog id
+
+The call registered with this token returns OPAL_WRONG_STATE, when read
+state of state machine is not in 'ELOG_STATE_FETCHED_DATA' or errorlog read
+pending list is empty.
+
+It returns OPAL_PARAMETER, when passed log id is not the same as log id of the
+top node in the elog_read_pending list.
+
+It returns OPAL_SUCCESS on successfully copying the errorlog data to the passed
+buffer.
+
+
+OPAL_ELOG_ACK
+-------------
+
+This token is used to register a call which acknowledges the passed ack_id
+(elog_id) which in turn sends a acknowledgement to the FSP and move the
+acknowledge elog id from processed list to the read free list.
+
+OPAL_ELOG_ACK accepts 1 parameter::
+- ack id
+
+In case of opal errorlogs, for the passed ack_id the corresponding node is
+returned to the pool of free object.
+
+The call registered with this token returns OPAL_INTERNAL_ERROR on failure to
+send acknowledement to the FSP and OPAL_SUCCESS on success.
+
+
+OPAL_ELOG_RESEND
+----------------
+
+This token is used to register a call which will resend all the elogs again to
+new kexec kernel.
+
+The call registered with this token accepts no parameter and returns type is
+void.
+
+
+OPAL_ELOG_SIZE
+--------------
+
+This token is used to register a call which will fill information about the
+errorlog like id, size and type.
+
+OPAL_ELOG_SIZE accepts 3 parameters:
+- elog ID
+- elog size
+- elog type
+
+The call registered with this token returns OPAL_WRONG_STATE, when read
+state of state machine is not in 'ELOG_STATE_FETCHED_DATA' or errorlog read
+pending list is empty.
+
+It returns OPAL_SUCCESS on successfully filling up the errorlog information
+in passed parameters.
