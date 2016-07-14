@@ -92,7 +92,7 @@ to as skiroot.
 The OPAL Specification explicitly allows variation in this payload.
 
 A requirement of the payload is that it MUST support loading and booting
-an uncomppressed vmlinux Linux kernel.
+an uncompressed vmlinux Linux kernel.
 [TODO: expand on what this actually means]
 
 An OPAL system MUST pass a device tree to the host kernel.
