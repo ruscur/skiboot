@@ -203,6 +203,68 @@ Using the reason code, an error log is generated with the information derived
 from the look-up table, populated and committed to FSP. All of it
 is done with just one call.
 
+
+Error logging retrieval from FSP:
+================================
+
+FSP send their errorlogs via giving notification to OPAL via mailbox protocol.
+
+OPAL maintains some lists:
+
+Free list      : List of free nodes
+Pending list   : List of nodes which is yet to be read by the host.
+Processed list : List of nodes which has been read but still waiting for
+                 acknowledgement.
+
+List of free nodes which contain log_id, log_size and the link which points
+to the next node.
+
+OPAL has state machine which has following states.
+
+enum elog_head_state {
+        ELOG_STATE_FETCHING,    /*In the process of reading log from FSP. */
+        ELOG_STATE_FETCHED_INFO,/* Indicates reading log info is completed */
+        ELOG_STATE_FETCHED_DATA,/* Indicates reading log is completed */
+        ELOG_STATE_NONE,        /* Indicates to fetch next log */
+        ELOG_STATE_REJECTED,    /* resend all pending logs to linux */
+};
+
+Initially, the state of the state machine is ELOG_STATE_NONE.
+
+When OPAL gets the notification about the errorlog, it takes out the node from
+free list and put it into pending list and update the state machine into
+fetching state(ELOG_STATE_FETCHING). It also gives response back to FSP about
+the new errorlog notification.
+
+It also queue mailbox message to get the errorlog data in opal errorlog buffer,
+once it is done the state machine gets into fetched state
+(ELOG_STATE_FETCHED_DATA).After that, opal notify the host to fetch the errorlog.
+
+Host uses the opal interface call to get the errorlog info(elogid, elog_size,
+elog_type) first then read the errorlog data in the kernel buffer that moves
+the pending errorlog to processed list. After reading the state machine moves
+to ELOG_STATE_NONE state.
+
+It acknowledges the errorlog id after reading by sending the call to opal which
+in turn sends the ack mbox message to FSP and moves errorlog id from processed
+list to again back to free node list and this process goes on every FSP
+errorlog.
+
+Design constraints:
+==================
+* #define ELOG_READ_MAX_RECORD            128
+
+  Currently, the number of error logs from FSP can hold in OPAL is limited to
+  128. if OPAL run out of free node in the list for the new error log, it sends
+  'Discarded by OPAL' message to the FSP. At some point in the future, it is
+  upto FSP when it notifies again to OPAL about the error log discarded.
+
+* #define ELOG_WRITE_MAX_RECORD		64
+
+  There is also limitation on the number of OPAL error logs OPAL can hold is 64.
+  if it is run out of the buffers in the pool, it will log the message saying
+  'Failed to get the buffer'.
+
 Note:
 ====
 * For more information regarding error logging and PEL format
