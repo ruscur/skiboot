@@ -51,6 +51,7 @@
 /* SCU registers */
 #define SCU_BASE		0x1e6e2000
 #define SCU_HW_STRAPPING	(SCU_BASE + 0x70)
+#define SCU_REVISION_ID		(SCU_BASE + 0x7C)
 
 /*
  * AHB Accessors
@@ -84,6 +85,9 @@ void ast_disable_sio_uart1(void);
 
 /* BT configuration */
 void ast_setup_ibt(uint16_t io_base, uint8_t irq);
+
+/* VGA configuration */
+void ast_setup_vga(void);
 
 #endif /* __SKIBOOT__ */
 

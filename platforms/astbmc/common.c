@@ -356,4 +356,6 @@ void astbmc_early_init(void)
 	uart_init();
 
 	prd_init();
+
+	ast_setup_vga();
 }

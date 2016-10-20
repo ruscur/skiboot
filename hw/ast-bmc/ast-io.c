@@ -469,3 +469,10 @@ void ast_disable_sio_uart1(void)
 
 	bmc_sio_put(true);
 }
+
+/* Perform some VGA configuration so the ast driver doesn't have to */
+void ast_setup_vga(void)
+{
+	uint32_t revision = bmc_sio_ahb_readl(SCU_REVISION_ID);
+	prlog(PR_WARNING, "ruscur: got revision %x\n", revision);
+}
