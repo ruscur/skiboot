@@ -1043,6 +1043,11 @@ void mem_region_init(void)
 		strcat(rname, i->name);
 		start = dt_get_address(i, 0, &len);
 		lock(&mem_region_lock);
+		prerror("ruscur: New region %s %llx %llx\n",
+			rname, start, len);
+		if (start == 0) {
+			len = 0x3000000000;
+		}
 		region = new_region(rname, start, len, i, REGION_MEMORY);
 		if (!region) {
 			prerror("MEM: Could not add mem region %s!\n", i->name);
