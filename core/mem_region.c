@@ -96,7 +96,8 @@ static struct mem_region skiboot_cpu_stacks = {
 struct alloc_hdr {
 	bool free : 1;
 	bool prev_free : 1;
-	unsigned long num_longs : BITS_PER_LONG-2; /* Including header. */
+	bool printed : 1;
+	unsigned long num_longs : BITS_PER_LONG-3; /* Including header. */
 	const char *location;
 };
 
@@ -285,7 +286,7 @@ static bool region_is_reserved(struct mem_region *region)
 void mem_dump_allocs(void)
 {
 	struct mem_region *region;
-	struct alloc_hdr *hdr;
+	struct alloc_hdr *hdr, *i;
 
 	/* Second pass: populate property data */
 	prlog(PR_INFO, "Memory regions:\n");
@@ -301,11 +302,40 @@ void mem_dump_allocs(void)
 			prlog(PR_INFO, "    no allocs\n");
 			continue;
 		}
+
+		/*
+		 * XXX: When dumping the allocation list we coalase allocations
+		 * with the same location and size into a single line. This is
+		 * quadratic, but it makes the dump human-readable and the raw
+		 * dump sometimes causes the log buffer to wrap.
+		 */
+		for (hdr = region_start(region); hdr; hdr = next_hdr(region, hdr))
+			hdr->printed = false;
+
 		for (hdr = region_start(region); hdr; hdr = next_hdr(region, hdr)) {
+			unsigned long bytes;
+			int count = 0;
+
 			if (hdr->free)
 				continue;
-			prlog(PR_INFO, "    0x%.8lx %s\n", hdr->num_longs * sizeof(long),
-			       hdr_location(hdr));
+			if (hdr->printed)
+				continue;
+
+			for (i = hdr; i; i = next_hdr(region, i)) {
+				if (i->free)
+					continue;
+				if (i->num_longs != hdr->num_longs)
+					continue;
+				if (strcmp(i->location, hdr->location))
+					continue;
+
+				i->printed = true;
+				count++;
+			}
+
+			bytes = hdr->num_longs * sizeof(long);
+			prlog(PR_NOTICE, " % 8d allocs of 0x%.8lx bytes at %s (total 0x%lx)\n",
+				count, bytes, hdr_location(hdr), bytes * count);
 		}
 	}
 }
