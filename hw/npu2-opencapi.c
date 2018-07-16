@@ -1107,6 +1107,7 @@ static int64_t npu2_opencapi_poll_link(struct pci_slot *slot)
 		return pci_slot_set_sm_timeout(slot, msecs_to_tb(1));
 
 	case OCAPI_SLOT_LINK_TRAINED:
+		dev->link_down = false;
 		otl_enabletx(chip_id, dev->npu->xscom_base, dev);
 		pci_slot_set_state(slot, OCAPI_SLOT_NORMAL);
 		return OPAL_SUCCESS;
@@ -1137,7 +1138,7 @@ static int64_t npu2_opencapi_freset(struct pci_slot *slot)
 	case OCAPI_SLOT_NORMAL:
 	case OCAPI_SLOT_FRESET_START:
 		OCAPIDBG(dev, "FRESET starts\n");
-
+		dev->link_down = true;
 		if (slot->ops.get_presence_state)
 			slot->ops.get_presence_state(slot, &presence);
 		if (!presence) {
@@ -1261,6 +1262,9 @@ static int64_t npu2_opencapi_pcicfg_read(struct phb *phb, uint32_t bdfn,
 	if (rc)
 		return rc;
 
+	if (dev->link_down)
+		return OPAL_HARDWARE;
+
 	genid_base = dev->bars[1].npu2_bar.base +
 		(index_to_block(dev->index) == NPU2_BLOCK_OTL1 ? 256 : 0);
 
@@ -1318,6 +1322,9 @@ static int64_t npu2_opencapi_pcicfg_write(struct phb *phb, uint32_t bdfn,
 	rc = npu2_opencapi_pcicfg_check(dev, offset, size);
 	if (rc)
 		return rc;
+
+	if (dev->link_down)
+		return OPAL_HARDWARE;
 
 	genid_base = dev->bars[1].npu2_bar.base +
 		(index_to_block(dev->index) == NPU2_BLOCK_OTL1 ? 256 : 0);
@@ -1637,6 +1644,7 @@ static void npu2_opencapi_setup_device(struct dt_node *dn_link, struct npu2 *n,
 	dev->bdfn = 0;
 	dev->train_need_fence = false;
 	dev->train_fenced = false;
+	dev->link_down = true;
 	n->total_devices++;
 
 	/* Find I2C port for handling device reset */
