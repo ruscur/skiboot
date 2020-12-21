@@ -105,7 +105,7 @@ static void cpu_wake(struct cpu_thread *cpu)
 {
 	/* Is it idle ? If not, no need to wake */
 	sync();
-	if (cpu->in_idle)
+	if (cpu->in_job_sleep)
 		cpu_send_ipi(cpu);
 }
 
@@ -392,7 +392,8 @@ static unsigned int cpu_idle_p8(enum cpu_wake_cause wake_on)
 	/* Synchronize with wakers */
 	if (wake_on == cpu_wake_on_job) {
 		/* Mark ourselves in idle so other CPUs know to send an IPI */
-		cpu->in_idle = true;
+		cpu->in_sleep = true;
+		cpu->in_job_sleep = true;
 		sync();
 
 		/* Check for jobs again */
@@ -426,8 +427,8 @@ static unsigned int cpu_idle_p8(enum cpu_wake_cause wake_on)
 skip_sleep:
 	/* Restore */
 	sync();
-	cpu->in_idle = false;
 	cpu->in_sleep = false;
+	cpu->in_job_sleep = false;
 	reset_cpu_icp();
 
 	return vec;
@@ -448,7 +449,8 @@ static unsigned int cpu_idle_p9(enum cpu_wake_cause wake_on)
 	/* Synchronize with wakers */
 	if (wake_on == cpu_wake_on_job) {
 		/* Mark ourselves in idle so other CPUs know to send an IPI */
-		cpu->in_idle = true;
+		cpu->in_sleep = true;
+		cpu->in_job_sleep = true;
 		sync();
 
 		/* Check for jobs again */
@@ -494,8 +496,8 @@ static unsigned int cpu_idle_p9(enum cpu_wake_cause wake_on)
  skip_sleep:
 	/* Restore */
 	sync();
-	cpu->in_idle = false;
 	cpu->in_sleep = false;
+	cpu->in_job_sleep = false;
 
 	return vec;
 }
@@ -541,10 +543,15 @@ static int nr_cpus_idle = 0;
 
 static void enter_idle(void)
 {
+	struct cpu_thread *cpu = this_cpu();
+
+	assert(!cpu->in_idle);
+
 	for (;;) {
 		lock(&idle_lock);
 		if (!reconfigure_idle) {
 			nr_cpus_idle++;
+			cpu->in_idle = true;
 			break;
 		}
 		unlock(&idle_lock);
@@ -561,9 +568,14 @@ static void enter_idle(void)
 
 static void exit_idle(void)
 {
+	struct cpu_thread *cpu = this_cpu();
+
+	assert(cpu->in_idle);
+
 	lock(&idle_lock);
 	assert(nr_cpus_idle > 0);
 	nr_cpus_idle--;
+	cpu->in_idle = false;
 	unlock(&idle_lock);
 }
 
@@ -594,12 +606,12 @@ static void reconfigure_idle_start(void)
 
 	/*
 	 * Order earlier store to reconfigure_idle=true vs load from
-	 * cpu->in_sleep and cpu->in_idle.
+	 * cpu->in_sleep.
 	 */
 	sync();
 
 	for_each_available_cpu(cpu) {
-		if (cpu->in_sleep || cpu->in_idle)
+		if (cpu->in_sleep)
 			cpu_send_ipi(cpu);
 	}
 
