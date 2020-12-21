@@ -60,8 +60,9 @@ struct cpu_thread {
 	bool				in_poller;
 	bool				in_reinit;
 	bool				in_fast_sleep;
-	bool				in_sleep;
 	bool				in_idle;
+	bool				in_sleep;
+	bool				in_job_sleep;
 	uint32_t			hbrt_spec_wakeup; /* primary only */
 	uint64_t			save_l2_fir_action1;
 	uint64_t			current_token;
