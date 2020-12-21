@@ -39,6 +39,7 @@ static bool hile_supported;
 static bool radix_supported;
 static unsigned long hid0_hile;
 static unsigned long hid0_attn;
+static bool reconfigure_idle = false;
 static bool sreset_enabled;
 static bool ipi_enabled;
 static bool pm_enabled;
@@ -392,7 +393,7 @@ static unsigned int cpu_idle_p8(enum cpu_wake_cause wake_on)
 		sync();
 
 		/* Check for jobs again */
-		if (cpu_check_jobs(cpu) || !pm_enabled)
+		if (cpu_check_jobs(cpu) || reconfigure_idle)
 			goto skip_sleep;
 
 		/* Setup wakup cause in LPCR: EE (for IPI) */
@@ -407,7 +408,7 @@ static unsigned int cpu_idle_p8(enum cpu_wake_cause wake_on)
 		sync();
 
 		/* Check if PM got disabled */
-		if (!pm_enabled)
+		if (reconfigure_idle)
 			goto skip_sleep;
 
 		/* EE and DEC */
@@ -448,7 +449,7 @@ static unsigned int cpu_idle_p9(enum cpu_wake_cause wake_on)
 		sync();
 
 		/* Check for jobs again */
-		if (cpu_check_jobs(cpu) || !pm_enabled)
+		if (cpu_check_jobs(cpu) || reconfigure_idle)
 			goto skip_sleep;
 
 		/* HV DBELL for IPI */
@@ -461,7 +462,7 @@ static unsigned int cpu_idle_p9(enum cpu_wake_cause wake_on)
 		sync();
 
 		/* Check if PM got disabled */
-		if (!pm_enabled)
+		if (reconfigure_idle)
 			goto skip_sleep;
 
 		/* HV DBELL and DEC */
@@ -532,69 +533,66 @@ static void cpu_idle_pm(enum cpu_wake_cause wake_on)
 	}
 }
 
-void cpu_idle_job(void)
-{
-	if (pm_enabled) {
-		cpu_idle_pm(cpu_wake_on_job);
-	} else {
-		struct cpu_thread *cpu = this_cpu();
+static struct lock idle_lock = LOCK_UNLOCKED;
+static int nr_cpus_idle = 0;
 
+static void enter_idle(void)
+{
+	for (;;) {
+		lock(&idle_lock);
+		if (!reconfigure_idle) {
+			nr_cpus_idle++;
+			break;
+		}
+		unlock(&idle_lock);
+
+		/* Another CPU is reconfiguring idle */
 		smt_lowest();
-		/* Check for jobs again */
-		while (!cpu_check_jobs(cpu)) {
-			if (pm_enabled)
-				break;
+		while (reconfigure_idle)
 			cpu_relax();
-			barrier();
-		}
 		smt_medium();
 	}
+
+	unlock(&idle_lock);
 }
 
-void cpu_idle_delay(unsigned long delay)
+static void exit_idle(void)
 {
-	unsigned long now = mftb();
-	unsigned long end = now + delay;
-	unsigned long min_pm = usecs_to_tb(10);
-
-	if (pm_enabled && delay > min_pm) {
-pm:
-		for (;;) {
-			if (delay >= 0x7fffffff)
-				delay = 0x7fffffff;
-			mtspr(SPR_DEC, delay);
-
-			cpu_idle_pm(cpu_wake_on_dec);
-
-			now = mftb();
-			if (tb_compare(now, end) == TB_AAFTERB)
-				break;
-			delay = end - now;
-			if (!(pm_enabled && delay > min_pm))
-				goto no_pm;
-		}
-	} else {
-no_pm:
-		smt_lowest();
-		for (;;) {
-			now = mftb();
-			if (tb_compare(now, end) == TB_AAFTERB)
-				break;
-			delay = end - now;
-			if (pm_enabled && delay > min_pm) {
-				smt_medium();
-				goto pm;
-			}
-		}
-		smt_medium();
-	}
+	lock(&idle_lock);
+	assert(nr_cpus_idle > 0);
+	nr_cpus_idle--;
+	unlock(&idle_lock);
 }
 
-static void cpu_pm_disable(void)
+static void reconfigure_idle_start(void)
 {
 	struct cpu_thread *cpu;
 
-	pm_enabled = false;
+	for (;;) {
+		lock(&idle_lock);
+		if (!reconfigure_idle) {
+			reconfigure_idle = true;
+			break;
+		}
+		unlock(&idle_lock);
+
+		/* Someone else is reconfiguring */
+		smt_lowest();
+		while (reconfigure_idle)
+			cpu_relax();
+		smt_medium();
+	}
+
+	unlock(&idle_lock);
+
+	/*
+	 * Now kick everyone out of idle.
+	 */
+
+	/*
+	 * Order earlier store to reconfigure_idle=true vs load from
+	 * cpu->in_sleep and cpu->in_idle.
+	 */
 	sync();
 
 	if (proc_gen == proc_gen_p8) {
@@ -609,14 +607,88 @@ static void cpu_pm_disable(void)
 			if (cpu->in_sleep || cpu->in_idle)
 				p9_dbell_send(cpu->pir);
 		}
-
-		smt_lowest();
-		for_each_available_cpu(cpu) {
-			while (cpu->in_sleep || cpu->in_idle)
-				barrier();
-		}
-		smt_medium();
 	}
+
+	smt_lowest();
+	while (nr_cpus_idle != 0)
+		cpu_relax();
+	smt_medium();
+
+	/*
+	 * Order load of nr_cpus_idle with loads of data the idle CPUs
+	 * might have previously stored to before coming out of idle.
+	 */
+	lwsync();
+}
+
+static void reconfigure_idle_end(void)
+{
+	assert(reconfigure_idle);
+	lock(&idle_lock);
+	reconfigure_idle = false;
+	unlock(&idle_lock);
+}
+
+void cpu_idle_job(void)
+{
+	struct cpu_thread *cpu = this_cpu();
+
+	do {
+		enter_idle();
+
+		if (pm_enabled) {
+			cpu_idle_pm(cpu_wake_on_job);
+		} else {
+			smt_lowest();
+			for (;;) {
+				if (cpu_check_jobs(cpu))
+					break;
+				if (reconfigure_idle)
+					break;
+				cpu_relax();
+			}
+			smt_medium();
+		}
+
+		exit_idle();
+
+	} while (!cpu_check_jobs(cpu));
+}
+
+void cpu_idle_delay(unsigned long delay)
+{
+	unsigned long now = mftb();
+	unsigned long end = now + delay;
+	unsigned long min_pm = usecs_to_tb(10);
+
+	do {
+		enter_idle();
+
+		delay = end - now;
+
+		if (pm_enabled && delay > min_pm) {
+			if (delay >= 0x7fffffff)
+				delay = 0x7fffffff;
+			mtspr(SPR_DEC, delay);
+
+			cpu_idle_pm(cpu_wake_on_dec);
+		} else {
+			smt_lowest();
+			for (;;) {
+				if (tb_compare(mftb(), end) == TB_AAFTERB)
+					break;
+				if (reconfigure_idle)
+					break;
+				cpu_relax();
+			}
+			smt_medium();
+		}
+
+		exit_idle();
+
+		now = mftb();
+
+	} while (tb_compare(now, end) != TB_AAFTERB);
 }
 
 void cpu_set_sreset_enable(bool enabled)
@@ -628,28 +700,16 @@ void cpu_set_sreset_enable(bool enabled)
 		/* Public P8 Mambo has broken NAP */
 		if (chip_quirk(QUIRK_MAMBO_CALLOUTS))
 			return;
-
-		sreset_enabled = enabled;
-		sync();
-
-		if (!enabled) {
-			cpu_pm_disable();
-		} else {
-			if (ipi_enabled)
-				pm_enabled = true;
-		}
-
-	} else if (proc_gen == proc_gen_p9) {
-		sreset_enabled = enabled;
-		sync();
-		/*
-		 * Kick everybody out of PM so they can adjust the PM
-		 * mode they are using (EC=0/1).
-		 */
-		cpu_pm_disable();
-		if (ipi_enabled)
-			pm_enabled = true;
 	}
+
+	reconfigure_idle_start();
+
+	sreset_enabled = enabled;
+
+	if (proc_gen == proc_gen_p8)
+		pm_enabled = ipi_enabled && sreset_enabled;
+
+	reconfigure_idle_end();
 }
 
 void cpu_set_ipi_enable(bool enabled)
@@ -657,24 +717,16 @@ void cpu_set_ipi_enable(bool enabled)
 	if (ipi_enabled == enabled)
 		return;
 
-	if (proc_gen == proc_gen_p8) {
-		ipi_enabled = enabled;
-		sync();
-		if (!enabled) {
-			cpu_pm_disable();
-		} else {
-			if (sreset_enabled)
-				pm_enabled = true;
-		}
+	reconfigure_idle_start();
 
-	} else if (proc_gen == proc_gen_p9) {
-		ipi_enabled = enabled;
-		sync();
-		if (!enabled)
-			cpu_pm_disable();
-		else
-			pm_enabled = true;
-	}
+	ipi_enabled = enabled;
+
+	if (proc_gen == proc_gen_p8)
+		pm_enabled = ipi_enabled && sreset_enabled;
+	else
+		pm_enabled = ipi_enabled;
+
+	reconfigure_idle_end();
 }
 
 void cpu_process_local_jobs(void)
