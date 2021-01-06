@@ -111,7 +111,7 @@ struct bt {
 };
 
 static struct bt bt;
-static struct bt_msg *inflight_bt_msg; /* Holds in flight message */
+static struct bt_msg * volatile inflight_bt_msg; /* Holds in flight message */
 
 static int ipmi_seq;
 
@@ -211,6 +211,11 @@ static void bt_msg_del(struct bt_msg *bt_msg)
 {
 	list_del(&bt_msg->link);
 	bt.queue_len--;
+
+	/* once inflight_bt_msg out of list, it should be emptyed */
+	if (bt_msg == inflight_bt_msg)
+		inflight_bt_msg = NULL;
+
 	unlock(&bt.lock);
 	ipmi_cmd_done(bt_msg->ipmi_msg.cmd,
 		      IPMI_NETFN_RETURN_CODE(bt_msg->ipmi_msg.netfn),
@@ -394,7 +399,7 @@ static void bt_expire_old_msg(uint64_t tb)
 			bt_msg_del(bt_msg);
 
 			/* Ready to send next message */
-			inflight_bt_msg = NULL;
+			//inflight_bt_msg = NULL;
 
 			/*
 			 * Timing out a message is inherently racy as the BMC
